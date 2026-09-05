@@ -4,8 +4,18 @@ local diagnostics = require("restful.diagnostics")
 local M = {}
 local roots = {}
 
+local function normalize_path(path)
+  path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  local realpath = (vim.uv or vim.loop).fs_realpath(path)
+  if realpath then return vim.fs.normalize(realpath) end
+  local parent = vim.fs.dirname(path)
+  local parent_realpath = (vim.uv or vim.loop).fs_realpath(parent)
+  if parent_realpath then return vim.fs.normalize(vim.fs.joinpath(parent_realpath, vim.fs.basename(path))) end
+  return path
+end
+
 local function normalize_root(root)
-  root = vim.fs.normalize(vim.fn.fnamemodify(root or vim.fn.getcwd(), ":p"))
+  root = normalize_path(root or vim.fn.getcwd())
   return root:gsub("/$", "")
 end
 
@@ -69,11 +79,12 @@ local candidate_pattern = table.concat({
 }, "|")
 
 local function fallback_files(root, opts, out, prefix)
-  opts, out, prefix = opts or {}, out or {}, prefix or root
+  root = normalize_root(root)
+  opts, out, prefix = opts or {}, out or {}, prefix and normalize_path(prefix) or root
   local handle = vim.loop.fs_scandir(prefix); if not handle then return out end
   while true do
     local name, kind = vim.loop.fs_scandir_next(handle); if not name then break end
-    local path = prefix .. "/" .. name
+    local path = normalize_path(prefix .. "/" .. name)
     local excluded = false; for _, part in ipairs(opts.exclude or { ".git", "node_modules", "vendor", "target", "build", "dist" }) do if name == part then excluded = true end end
     if not excluded then
       if kind == "directory" then
@@ -87,6 +98,7 @@ local function fallback_files(root, opts, out, prefix)
 end
 
 local function candidate_files(root, opts)
+  root = normalize_root(root)
   if vim.fn.executable("rg") ~= 1 then return fallback_files(root, opts) end
   local command = { "rg", "--files-with-matches", "--no-messages", "--hidden" }
   for _, glob in ipairs(source_globs) do vim.list_extend(command, { "--glob", glob }) end
@@ -97,7 +109,7 @@ local function candidate_files(root, opts)
   local result = vim.system(command, { text = true, cwd = root }):wait()
   if result.code ~= 0 and result.code ~= 1 then return fallback_files(root, opts) end
   local paths = vim.split(result.stdout or "", "\n", { trimempty = true })
-  for i, path in ipairs(paths) do paths[i] = vim.fs.joinpath(root, path) end
+  for i, path in ipairs(paths) do paths[i] = normalize_path(vim.fs.joinpath(root, path)) end
   return paths
 end
 
@@ -115,6 +127,7 @@ function M._candidate_command(opts) return candidate_command(opts or {}) end
 
 function M.discover(root, opts)
   opts = opts or {}
+  root = normalize_root(root)
   local cancelled, done = false, false
   local process
   local system = opts.system or vim.system
@@ -129,7 +142,7 @@ function M.discover(root, opts)
       return opts.on_done(nil, result.stderr or ("rg exited with code " .. result.code))
     end
     local paths = vim.split(result.stdout or "", "\n", { trimempty = true })
-    for i, path in ipairs(paths) do paths[i] = vim.fs.joinpath(root, path) end
+    for i, path in ipairs(paths) do paths[i] = normalize_path(vim.fs.joinpath(root, path)) end
     opts.on_done(paths)
   end))
   return {
@@ -173,7 +186,7 @@ end
 
 function M.refresh_file(path, opts, on_done)
   opts = opts or {}
-  path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  path = normalize_path(path)
   local root = normalize_root(opts.root or vim.fn.getcwd())
   local state = M.state(root)
   local report, err = scan_path(path, opts)
@@ -191,7 +204,7 @@ function M.refresh_file(path, opts, on_done)
 end
 
 local function root_for_path(path)
-  path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  path = normalize_path(path)
   local best
   for root in pairs(roots) do
     if path == root or vim.startswith(path, root .. "/") then
@@ -206,7 +219,7 @@ function M.invalidate(path, opts)
   local root = root_for_path(path)
   if not root then return end
   local state = M.state(root)
-  path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  path = normalize_path(path)
   state.stale_files[path] = true
   if state.status == "ready" then state.status = "stale" end
   if state.timer then state.timer:stop(); state.timer:close(); state.timer = nil end
@@ -222,7 +235,7 @@ end
 function M.parse_candidates(paths, opts)
   opts = opts or {}
   local cancelled, cursor, done = false, 1, false
-  local working = { files = {}, endpoints = {}, diagnostics = diagnostics.new(), seen = {} }
+  local working = { files = {}, endpoints = {}, diagnostics = diagnostics.new(), seen = {}, seen_paths = {} }
   local budget_ns = (opts.parse_budget_ms or 6) * 1e6
   local now = opts.now or (vim.uv or vim.loop).hrtime
   local schedule = opts.schedule or vim.schedule
@@ -236,23 +249,26 @@ function M.parse_candidates(paths, opts)
     local started = now()
     while cursor <= #paths do
       if cancelled then return finish("cancelled") end
-      local path = paths[cursor]
+      local path = normalize_path(paths[cursor])
       cursor = cursor + 1
-      local report, err = (opts.scan_path or scan_path)(path, opts)
-      if report then
-        working.files[path] = report
-        diagnostics.merge(working.diagnostics, report.diagnostics)
-        for _, endpoint in ipairs(report.endpoints or {}) do
-          if not working.seen[endpoint.id] then
-            working.seen[endpoint.id] = true
-            working.endpoints[#working.endpoints + 1] = endpoint
-            working.frameworks = working.frameworks or {}
-            local framework = endpoint.framework or "unknown"
-            working.frameworks[framework] = (working.frameworks[framework] or 0) + 1
-            if opts.on_item then opts.on_item(endpoint, cursor - 1, #paths) end
+      if not working.seen_paths[path] then
+        working.seen_paths[path] = true
+        local report, err = (opts.scan_path or scan_path)(path, opts)
+        if report then
+          working.files[path] = report
+          diagnostics.merge(working.diagnostics, report.diagnostics)
+          for _, endpoint in ipairs(report.endpoints or {}) do
+            if not working.seen[endpoint.id] then
+              working.seen[endpoint.id] = true
+              working.endpoints[#working.endpoints + 1] = endpoint
+              working.frameworks = working.frameworks or {}
+              local framework = endpoint.framework or "unknown"
+              working.frameworks[framework] = (working.frameworks[framework] or 0) + 1
+              if opts.on_item then opts.on_item(endpoint, cursor - 1, #paths) end
+            end
           end
-        end
-      elseif err then diagnostics.add(working.diagnostics, { file = path }, err) end
+        elseif err then diagnostics.add(working.diagnostics, { file = path }, err) end
+      end
       if now() - started >= budget_ns then return schedule(step) end
     end
     finish()
@@ -316,7 +332,8 @@ function M.scan_root(root, opts)
   opts = opts or {}; root = normalize_root(root)
   local state = M.state(root)
   state.files, state.endpoints, state.diagnostics = {}, {}, diagnostics.new()
-  for _, path in ipairs(candidate_files(root, opts)) do
+  for _, candidate in ipairs(candidate_files(root, opts)) do
+    local path = normalize_path(candidate)
     local file = io.open(path, "r"); local text = file and file:read("*a") or nil; if file then file:close() end
     if text then local report = scanner.scan_file(text, path, opts); state.files[path] = report; diagnostics.merge(state.diagnostics, report.diagnostics); for _, endpoint in ipairs(report.endpoints) do state.endpoints[#state.endpoints + 1] = endpoint end else diagnostics.add(state.diagnostics, { file = path }, "unable to read file") end
   end

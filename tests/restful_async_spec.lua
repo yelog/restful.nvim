@@ -40,7 +40,7 @@ local killed = false
 local discovery_callback
 local process = index.discover(root, {
   system = function(command, opts, callback)
-    assert(command[1] == "rg" and opts.cwd == root)
+    assert(command[1] == "rg" and opts.cwd == vim.loop.fs_realpath(root))
     discovery_callback = callback
     return { kill = function() killed = true end, callback = callback }
   end,
@@ -65,7 +65,7 @@ index.parse_candidates({ "/tmp/a", "/tmp/b", "/tmp/c" }, {
     return function() value = value + 2e6; return value end
   end)(),
   schedule = function(fn) scheduled[#scheduled + 1] = fn end,
-  scan_path = function(path) return reports[path] end,
+  scan_path = function(path) return reports[path] or reports[path:gsub("^/private", "")] end,
   on_item = function(endpoint) parsed = parsed or {}; parsed[#parsed + 1] = endpoint end,
   on_done = function(err, value) done = { err = err, value = value } end,
 })
@@ -76,6 +76,19 @@ while #scheduled > 0 do
 end
 assert(#parsed == 2, "duplicate endpoint IDs should be streamed only once")
 assert(done and not done.err and #done.value.endpoints == 2, "parsing should commit a complete working set")
+
+local alias_calls, alias_done
+index.parse_candidates({ "/tmp/a", "/private/tmp/a" }, {
+  scan_path = function(path)
+    alias_calls = (alias_calls or 0) + 1
+    return reports[path:gsub("^/private", "")]
+  end,
+  on_done = function(err, value) alias_done = { err = err, value = value } end,
+})
+vim.wait(1000, function() return alias_done ~= nil end)
+assert(alias_calls == 1, "path aliases should scan one file only once")
+assert(alias_done and not alias_done.err and vim.tbl_count(alias_done.value.files) == 1,
+  "path aliases should produce one file report")
 
 vim.fn.delete(root, "rf")
 print("api-query-async-tests: ok")
