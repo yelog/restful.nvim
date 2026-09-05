@@ -55,6 +55,15 @@ function M.setup(opts)
 end
 
 function M.open(opts)
+  opts = vim.tbl_deep_extend("force", {}, opts or {})
+  local mode = vim.fn.mode()
+  if opts.query == nil and (mode == "v" or mode == "V" or mode == "\22") then
+    local lines = vim.fn.getregion(vim.fn.getpos("v"), vim.fn.getpos("."), {
+      type = mode,
+      exclusive = vim.o.selection == "exclusive",
+    })
+    opts.query = vim.trim(table.concat(lines, " "))
+  end
   local index = index_module()
   if not index then return end
   opts = vim.tbl_deep_extend("force", {}, config.get(), opts or {})

@@ -141,6 +141,7 @@ function M.open(items, opts)
       end,
     },
     win = { input = { keys = {
+      ["<c-u>"] = { function() return "<c-g>u<c-u>" end, mode = "i", expr = true, desc = "delete to start of line" },
       [keys.open or "<c-o>"] = { "api_request_open", mode = { "n", "i" } },
       [keys.run or "<c-r>"] = { "api_request_run", mode = { "n", "i" } },
     } } },

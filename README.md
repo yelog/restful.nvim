@@ -21,7 +21,7 @@ Discover server API endpoints in Java, Python, Go, JavaScript, and TypeScript pr
   },
   opts = {},
   keys = {
-    { "<leader>iq", function() require("restful").open() end, desc = "Query API endpoint" },
+    { "<leader>iq", function() require("restful").open() end, mode = { "n", "x" }, desc = "Query API endpoint" },
   },
 }
 ```
@@ -33,7 +33,9 @@ Discover server API endpoints in Java, Python, Go, JavaScript, and TypeScript pr
 - `:RestfulDiagnostics` opens current index diagnostics in the quickfix list
 - `:RestfulFrameworks` lists detected frameworks and endpoint counts
 
-Inside the picker, Enter jumps to the source, `<C-O>` opens an HTTP draft, and `<C-R>` runs it through Kulala when installed. Unsafe methods are confirmed by default.
+Inside the picker, Enter jumps to the source, `<C-O>` opens an HTTP draft, and `<C-R>` runs it through Kulala when installed. In the input window, `<C-U>` deletes from the cursor to the start of the search line. Unsafe methods are confirmed by default.
+
+Calling `require("restful").open()` in Visual mode prefills the search with the current selection without changing registers. Character, line, and block selections are supported; selected lines are joined with spaces and outer whitespace is trimmed. An explicit `query`, including `query = ""`, overrides the selection. Normal mode does not reuse an old selection. This applies to Lua mappings, not a Visual range passed to `:Restful`.
 
 ## Configuration
 

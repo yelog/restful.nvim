@@ -16,6 +16,10 @@ assert(captured.show_delay == 0 and captured.show_empty == true, "cold picker sh
 picker.open(finder, { query = "users", picker = { keys = { open = "<a-o>" } } })
 assert(captured.pattern == "users", "picker should preserve the initial query")
 assert(captured.win.input.keys["<a-o>"], "nested picker key configuration should be honored")
+local ctrl_u = captured.win.input.keys["<c-u>"]
+assert(type(ctrl_u[1]) == "function" and ctrl_u.mode == "i" and ctrl_u.expr == true
+    and ctrl_u.desc == "delete to start of line", "Ctrl-U should delete input to the start of the line")
+assert(ctrl_u[1]() == "<c-g>u<c-u>", "Ctrl-U mapping should return native delete keys")
 
 local wrapped = captured.finder({}, {})
 assert(type(wrapped) == "table", "ready finder sources should return items")
