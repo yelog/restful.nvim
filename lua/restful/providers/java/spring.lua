@@ -78,15 +78,37 @@ local function javadoc_description(lines, method)
   while cursor > 0 and vim.trim(lines[cursor] or "") == "" do cursor = cursor - 1 end
   if cursor == 0 or not (lines[cursor] or ""):find("*/", 1, true) then return nil end
 
-  local comments = {}
+  local comments, found_start = {}, false
   while cursor > 0 do
     local line = lines[cursor] or ""
-    local text = line:gsub("^%s*/?%*+%s?", ""):gsub("%s*%*/%s*$", "")
-    if text ~= "" and not text:match("^@[%w_]+") then table.insert(comments, 1, text) end
-    if line:find("/**", 1, true) then break end
+    local text = line
+    if not found_start then
+      text = text:gsub("%s*%*/%s*$", "")
+    end
+    text = text:gsub("^%s*/%*%*?%s?", ""):gsub("^%s*%*%s?", "")
+    table.insert(comments, 1, vim.trim(text))
+    if line:find("/**", 1, true) then found_start = true; break end
     cursor = cursor - 1
   end
-  return comments[1]
+  if not found_start then return nil end
+
+  local body, description_parts, current_description, body_active = {}, {}, false, true
+  for _, text in ipairs(comments) do
+    if text == "" then
+      if #body > 0 then body_active = false end
+    elseif text:match("^@[%w_]+") then
+      body_active = false
+      local value = text:match("^@description%s*:?[ 	]*(.*)$")
+      current_description = value ~= nil
+      if current_description and value ~= "" and #description_parts == 0 then description_parts[#description_parts + 1] = value end
+    elseif current_description then
+      description_parts[#description_parts + 1] = text
+    elseif body_active then
+      body[#body + 1] = text
+    end
+  end
+  if #body > 0 then return table.concat(body, " ") end
+  return #description_parts > 0 and table.concat(description_parts, " ") or nil
 end
 
 local function extract_types(type_list, filename, lines, result)

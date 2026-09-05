@@ -3,6 +3,7 @@ local config_root = vim.fs.dirname(vim.fs.dirname(test_file))
 package.path = table.concat({ config_root .. "/lua/?.lua", config_root .. "/lua/?/init.lua", package.path }, ";")
 
 local spring = require("restful.providers.java.spring")
+local picker = require("restful.picker")
 
 local function find_endpoint(items, method, path)
   for _, item in ipairs(items) do
@@ -13,6 +14,105 @@ end
 local function assert_absent(items, path)
   for _, item in ipairs(items) do assert(item.path ~= path, "unexpected endpoint: " .. path) end
 end
+
+local function extract_client(javadoc)
+  local source = table.concat({
+    "public interface SysMenuClient {",
+    javadoc,
+    '@RequestMapping("/findByMenuType")',
+    "ResultData<List<SysMenu>> findByMenuType(@RequestParam(\"menuType\") String menuType);",
+    "}",
+  }, "\n")
+  return spring.extract({
+    source = source,
+    declaration_parser = function() return nil, "Java parser unavailable" end,
+  }, { path = "/tmp/SysMenuClient.java" })[1]
+end
+
+local tagged_client = extract_client(table.concat({
+  "/**",
+  " * @param menuType 菜单类型",
+  " * @param menuNameList 菜单名称集合",
+  " * @description: 根据菜单类型和菜单的名称获取相关配置",
+  " * @return: util.com.lenovo.moss.framework.core.ResultData",
+  " * @author: hezhiqin",
+  " * @time: 2022/6/25 21:10",
+  " */",
+}, "\n"))
+assert(tagged_client.description == "根据菜单类型和菜单的名称获取相关配置", "@description should be used as the endpoint name")
+assert(picker.display_name(tagged_client) == tagged_client.description, "picker should display the Javadoc description")
+assert(tagged_client.path == "/findByMenuType", "Javadoc parsing must not change the route")
+assert(vim.tbl_contains(tagged_client.methods, "ANY"), "RequestMapping should retain the HTTP method")
+
+local metadata_only_client = extract_client(table.concat({
+  "/**",
+  " * @param menuType 菜单类型",
+  " * @return: util.com.lenovo.moss.framework.core.ResultData",
+  " */",
+}, "\n"))
+assert(metadata_only_client.description == nil, "metadata-only Javadoc should not become a description")
+assert(picker.display_name(metadata_only_client) == "findByMenuType", "missing description should fall back to the method name")
+
+local prose_client = extract_client(table.concat({
+  "/**",
+  " * 根据菜单类型查询菜单。",
+  " * 该接口支持批量名称过滤。",
+  " *",
+  " * @param menuType 菜单类型",
+  " * @return 菜单结果",
+  " */",
+}, "\n"))
+assert(prose_client.description == "根据菜单类型查询菜单。 该接口支持批量名称过滤。", "Javadoc prose should use its first paragraph")
+
+local multiline_description = extract_client(table.concat({
+  "/**",
+  " * @description: 根据菜单类型查询菜单。",
+  " * 支持批量名称过滤。",
+  " * @return 菜单结果",
+  " */",
+}, "\n"))
+assert(multiline_description.description == "根据菜单类型查询菜单。 支持批量名称过滤。", "description tags should include continuation text")
+
+local description_without_colon = extract_client(table.concat({
+  "/**",
+  " * @description 根据菜单类型查询菜单。",
+  " * 支持批量名称过滤。",
+  " * @return 菜单结果",
+  " */",
+}, "\n"))
+assert(description_without_colon.description == "根据菜单类型查询菜单。 支持批量名称过滤。", "description without a colon should be supported")
+
+local annotated_client = spring.extract({
+  source = table.concat({
+    "public interface SysMenuClient {",
+    "/**",
+    " * Javadoc description",
+    " */",
+    '@Operation(summary = "Operation summary")',
+    '@RequestMapping("/findByMenuType")',
+    "ResultData<List<SysMenu>> findByMenuType();",
+    "}",
+  }, "\n"),
+  declaration_parser = function() return nil, "Java parser unavailable" end,
+}, { path = "/tmp/SysMenuClient.java" })[1]
+assert(annotated_client.description == "Operation summary", "operation annotations should take priority")
+
+local adjacent_client = spring.extract({
+  source = table.concat({
+    "public interface SysMenuClient {",
+    "/** first method */",
+    '@RequestMapping("/first")',
+    "ResultData first();",
+    "/** second method */",
+    '@RequestMapping("/second")',
+    "ResultData second();",
+    "}",
+  }, "\n"),
+  declaration_parser = function() return nil, "Java parser unavailable" end,
+}, { path = "/tmp/SysMenuClient.java" })
+assert(#adjacent_client == 2, "adjacent mapped methods should both be extracted")
+assert(adjacent_client[1].description == "first method", "the first Javadoc must stay with its method")
+assert(adjacent_client[2].description == "second method", "the second Javadoc must stay with its method")
 
 local agreement_source = table.concat({
   "@RestController",
