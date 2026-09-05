@@ -90,5 +90,82 @@ assert(alias_calls == 1, "path aliases should scan one file only once")
 assert(alias_done and not alias_done.err and vim.tbl_count(alias_done.value.files) == 1,
   "path aliases should produce one file report")
 
+local refresh_discover, refresh_parse = index.discover, index.parse_candidates
+local refresh_root = vim.fn.tempname()
+local refresh_file = refresh_root .. "/Changed.java"
+vim.fn.mkdir(refresh_root, "p")
+vim.fn.writefile({ "class Changed {}" }, refresh_file)
+local refresh_state = index.state(refresh_root)
+local refresh_key = vim.fs.joinpath(vim.loop.fs_realpath(refresh_root), "Changed.java")
+local refresh_calls = 0
+index.discover = function(_, opts)
+  opts.on_done({ refresh_file })
+  return { cancel = function() end }
+end
+index.parse_candidates = function(_, opts)
+  refresh_calls = refresh_calls + 1
+  if refresh_calls == 1 then
+    index.invalidate(refresh_file, { root = refresh_root, debounce_ms = 100000 })
+    opts.on_done(nil, {
+      files = { [refresh_key] = { endpoints = { { id = "old", path = "/old", methods = { "GET" } } }, diagnostics = { items = {} } } },
+      endpoints = { { id = "old", path = "/old", methods = { "GET" } } },
+      diagnostics = { items = {} },
+    })
+  elseif refresh_calls == 2 then
+    index.invalidate(refresh_file, { root = refresh_root, debounce_ms = 100000 })
+    opts.on_done(nil, {
+      files = { [refresh_key] = { endpoints = { { id = "new", path = "/new", methods = { "GET" } } }, diagnostics = { items = {} } } },
+      endpoints = { { id = "new", path = "/new", methods = { "GET" } } },
+      diagnostics = { items = {} },
+    })
+  else
+    opts.on_done(nil, {
+      files = { [refresh_key] = { endpoints = { { id = "latest", path = "/latest", methods = { "GET" } } }, diagnostics = { items = {} } } },
+      endpoints = { { id = "latest", path = "/latest", methods = { "GET" } } },
+      diagnostics = { items = {} },
+    })
+  end
+  return { cancel = function() end }
+end
+index.refresh({ root = refresh_root, force = true })
+assert(refresh_calls == 3, "refresh should rescan each change during the full scan")
+assert(refresh_state.endpoints[1].path == "/latest", "latest file content must win over an older full-scan result")
+index.discover, index.parse_candidates = refresh_discover, refresh_parse
+index._reset()
+
+local delete_root = vim.fn.tempname()
+local delete_path = delete_root .. "/Deleted.java"
+vim.fn.mkdir(delete_root, "p")
+vim.fn.writefile({ "class Deleted {}" }, delete_path)
+local delete_state = index.state(delete_root)
+local delete_key = vim.fs.joinpath(vim.loop.fs_realpath(delete_root), "Deleted.java")
+local delete_discover, delete_parse = index.discover, index.parse_candidates
+local delete_calls = 0
+index.discover = function(_, opts)
+  opts.on_done({ delete_path })
+  return { cancel = function() end }
+end
+index.parse_candidates = function(_, opts)
+  delete_calls = delete_calls + 1
+  if delete_calls == 1 then
+    vim.fn.delete(delete_path)
+    index.invalidate(delete_path, { root = delete_root, debounce_ms = 100000 })
+    opts.on_done(nil, {
+      files = { [delete_key] = { endpoints = { { id = "deleted", path = "/deleted", methods = { "GET" } } }, diagnostics = { items = {} } } },
+      endpoints = { { id = "deleted", path = "/deleted", methods = { "GET" } } },
+      diagnostics = { items = {} },
+    })
+  else
+    opts.on_done(nil, { files = {}, endpoints = {}, diagnostics = { items = {} } })
+  end
+  return { cancel = function() end }
+end
+index.refresh({ root = delete_root, force = true })
+assert(#delete_state.endpoints == 0, "deleting a dirty file must remove its old report before commit")
+index.discover, index.parse_candidates = delete_discover, delete_parse
+index._reset()
+
 vim.fn.delete(root, "rf")
+vim.fn.delete(refresh_root, "rf")
+vim.fn.delete(delete_root, "rf")
 print("api-query-async-tests: ok")

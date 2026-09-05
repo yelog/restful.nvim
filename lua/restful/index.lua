@@ -162,21 +162,33 @@ local function scan_path(path, opts)
   return scanner.scan_file(text, path, opts)
 end
 
-local function rebuild(state)
+local function index_reports(files)
   local endpoints, seen, frameworks = {}, {}, {}
   local merged = diagnostics.new()
-  for _, report in pairs(state.files) do
+  for _, report in pairs(files) do
     diagnostics.merge(merged, report.diagnostics)
     for _, endpoint in ipairs(report.endpoints or {}) do
       if not seen[endpoint.id] then
         seen[endpoint.id] = true
         endpoints[#endpoints + 1] = endpoint
-        frameworks[endpoint.framework] = (frameworks[endpoint.framework] or 0) + 1
+        local framework = endpoint.framework or "unknown"
+        frameworks[framework] = (frameworks[framework] or 0) + 1
       end
     end
   end
   table.sort(endpoints, model.compare)
-  state.endpoints, state.diagnostics, state.frameworks = endpoints, merged, frameworks
+  return endpoints, merged, frameworks
+end
+
+local function rebuild(state)
+  state.endpoints, state.diagnostics, state.frameworks = index_reports(state.files)
+end
+
+local function take_stale_files(state)
+  if state.timer then state.timer:stop(); state.timer:close(); state.timer = nil end
+  local files = state.stale_files
+  state.stale_files = {}
+  return files
 end
 
 local function matches(endpoint, opts)
@@ -226,8 +238,7 @@ function M.invalidate(path, opts)
   local delay = opts.cache and opts.cache.debounce_ms or opts.debounce_ms or 400
   state.timer = vim.defer_fn(function()
     state.timer = nil
-    local files = state.stale_files
-    state.stale_files = {}
+    local files = take_stale_files(state)
     for changed in pairs(files) do M.refresh_file(changed, vim.tbl_extend("force", opts, { root = root })) end
   end, delay)
 end
@@ -371,11 +382,33 @@ function M.refresh(opts)
         end
         return
       end
+      local function finish_refresh(parse_err, working)
+        if parse_err then
+          if state.generation == generation then
+            state.status = has_endpoints(state) and "ready" or "error"
+            state.error = parse_err
+          end
+          return
+        end
+        if state.generation ~= generation then return end
+        local stale = take_stale_files(state)
+        if next(stale) then
+          for changed in pairs(stale) do working.files[changed] = nil end
+          M.parse_candidates(vim.tbl_keys(stale), vim.tbl_extend("force", opts, {
+            on_done = function(rescan_err, rescan)
+              if rescan_err then return finish_refresh(rescan_err) end
+              for path, report in pairs(rescan.files or {}) do working.files[path] = report end
+              diagnostics.merge(working.diagnostics, rescan.diagnostics)
+              finish_refresh(nil, working)
+            end,
+          }))
+          return
+        end
+        working.endpoints, working.diagnostics, working.frameworks = index_reports(working.files)
+        M._commit(state, generation, working)
+      end
       M.parse_candidates(paths or {}, vim.tbl_extend("force", opts, {
-        on_done = function(parse_err, working)
-          if not parse_err and working and state.generation == generation then M._commit(state, generation, working) end
-          if parse_err and state.generation == generation then state.status = has_endpoints(state) and "ready" or "error"; state.error = parse_err end
-        end,
+        on_done = function(parse_err, working) finish_refresh(parse_err, working) end,
       }))
     end,
   }))
