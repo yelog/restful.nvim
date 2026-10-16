@@ -89,6 +89,15 @@ assert(formatted[#formatted].virt_text_win_col, "source filenames should be righ
 assert(picker_item.text == "<anonymous> /api/{id}" or picker_item.text == "get /api/{id}",
   "only the display name and path should participate in matching")
 
+local jump_file = "/tmp/restful-picker-jump.java"
+vim.fn.writefile({ "class Users {", "  public String getUser() {}", "}" }, jump_file)
+picker.jump({ handler = { file = jump_file, line = 2, column = 1 }, handler_name = "getUser" })
+local cursor = vim.api.nvim_win_get_cursor(0)
+assert(cursor[1] == 2 and cursor[2] == 16, "picker jumps to the first character of the handler name")
+picker.jump({ handler = { file = jump_file, line = 2, column = 1, name = "getUser" } })
+cursor = vim.api.nvim_win_get_cursor(0)
+assert(cursor[1] == 2 and cursor[2] == 16, "picker uses the handler object name when available")
+
 local configured_detection = detector.for_file(fixtures[1].source, "/tmp/Users.java", { providers = {} })
 assert(#configured_detection > 0, "an empty provider configuration should use built-in providers")
 print(available == 0 and "api-query-provider-tests: skipped (providers unavailable)" or "api-query-provider-tests: ok")
