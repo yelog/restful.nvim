@@ -25,7 +25,15 @@ local function jump(item)
   local loc = location(item)
   if not loc or not loc.file then return notify("no source location", vim.log.levels.WARN) end
   vim.cmd("edit " .. vim.fn.fnameescape(loc.file))
-  vim.api.nvim_win_set_cursor(0, { math.max(1, loc.line or 1), math.max(0, (loc.column or 1) - 1) })
+  local line = math.max(1, loc.line or 1)
+  local column = loc.column or 1
+  local handler_name = item.handler_name or item.handler and item.handler.name
+  if type(handler_name) == "string" and handler_name ~= "" then
+    local text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
+    column = text:find(handler_name, 1, true) or column
+  end
+  -- cursor() uses the same 1-based byte column as provider locations.
+  vim.fn.cursor(line, math.max(1, column))
 end
 
 local function label(item)
